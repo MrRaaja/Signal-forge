@@ -1,0 +1,25 @@
+# Python virtual environment (do NOT commit — it's large and machine-specific)
+.venv/
+venv/
+env/
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.spec
+
+# PyInstaller
+*.manifest
+
+# Local user settings (stored in %APPDATA% normally, but ignore any local copies)
+settings.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

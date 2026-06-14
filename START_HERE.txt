@@ -1,0 +1,36 @@
+============================================================
+  SignalForge  --  QUICK START
+============================================================
+
+EASIEST WAY TO RUN (recommended)
+--------------------------------
+1. Make sure Python 3.11 or 3.12 is installed.
+   Get it from https://www.python.org/downloads/
+   IMPORTANT: during install, tick "Add Python to PATH".
+
+2. Double-click  run.bat
+   - The FIRST time, it sets everything up automatically (a few minutes).
+   - After that, double-clicking run.bat just opens the app instantly.
+
+That's it. No manual file installing needed.
+
+
+WANT A STANDALONE .EXE INSTEAD?
+-------------------------------
+Double-click  build.bat
+When it finishes, your app is in:  dist\MidiDiscordMixer\
+You can copy that whole folder to any Windows PC and run
+MidiDiscordMixer.exe -- no Python needed on that PC.
+
+
+BEFORE USING IT WITH DISCORD
+----------------------------
+Install VB-Audio Virtual Cable (free):
+   https://vb-audio.com/Cable/
+Then in the app pick "CABLE Input" as the Discord output,
+and in Discord set your mic to "CABLE Output".
+Turn OFF Discord's noise suppression / echo cancellation / AGC.
+
+Full details, mixer/knob/pad setup, and troubleshooting are in
+README.md.
+============================================================
