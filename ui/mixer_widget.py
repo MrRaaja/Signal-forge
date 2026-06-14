@@ -54,6 +54,7 @@ class _Meter(QWidget):
 class _ChannelStrip(QWidget):
     volumeChanged = Signal(str, float)
     muteChanged = Signal(str, bool)
+    soloChanged = Signal(str, bool)
     monitorChanged = Signal(bool)  # only emitted by the mic strip
 
     def __init__(self, key: str, label: str):
@@ -84,6 +85,14 @@ class _ChannelStrip(QWidget):
         self.mute_btn.setFixedHeight(24)
         self.mute_btn.toggled.connect(self._on_mute)
 
+        # Solo only for source channels (the master bus has no solo).
+        self.solo_btn = None
+        if key != "master":
+            self.solo_btn = QPushButton("SOLO")
+            self.solo_btn.setCheckable(True)
+            self.solo_btn.setFixedHeight(22)
+            self.solo_btn.toggled.connect(self._on_solo)
+
         slider_row = QHBoxLayout()
         slider_row.setSpacing(4)
         slider_row.setAlignment(Qt.AlignHCenter)
@@ -94,6 +103,8 @@ class _ChannelStrip(QWidget):
         lay.addLayout(slider_row)
         lay.addWidget(self.value_lbl)
         lay.addWidget(self.mute_btn)
+        if self.solo_btn is not None:
+            lay.addWidget(self.solo_btn)
 
         # Monitor toggle — only shown for the mic strip
         if key == "mic":
@@ -114,6 +125,15 @@ class _ChannelStrip(QWidget):
             "background:#ff5a36;color:#111;font-weight:700;" if checked else "")
         self.muteChanged.emit(self.key, checked)
 
+    def _on_solo(self, checked: bool):
+        self.solo_btn.setStyleSheet(
+            "background:#e3c84a;color:#111;font-weight:700;" if checked else "")
+        self.soloChanged.emit(self.key, checked)
+
+    def set_solo(self, soloed: bool):
+        if self.solo_btn is not None:
+            self.solo_btn.setChecked(soloed)
+
     def _on_monitor(self, checked: bool):
         self.mon_btn.setText("MON ON" if checked else "MON OFF")
         self.mon_btn.setStyleSheet(
@@ -133,6 +153,7 @@ class _ChannelStrip(QWidget):
 class MixerWidget(QWidget):
     volumeChanged = Signal(str, float)
     muteChanged = Signal(str, bool)
+    soloChanged = Signal(str, bool)
     micMonitorChanged = Signal(bool)
 
     def __init__(self, parent=None):
@@ -144,6 +165,7 @@ class MixerWidget(QWidget):
             strip = _ChannelStrip(key, label)
             strip.volumeChanged.connect(self.volumeChanged)
             strip.muteChanged.connect(self.muteChanged)
+            strip.soloChanged.connect(self.soloChanged)
             if key == "mic":
                 strip.monitorChanged.connect(self.micMonitorChanged)
             self.strips[key] = strip
@@ -160,3 +182,12 @@ class MixerWidget(QWidget):
     def set_level(self, channel: str, v: float):
         if channel in self.strips:
             self.strips[channel].meter.set_level(v)
+
+    def set_solo(self, channel: str, soloed: bool):
+        if channel in self.strips:
+            self.strips[channel].set_solo(soloed)
+
+    def toggle_solo(self, channel: str):
+        """Flip a channel's solo (used by the F6/F7/F8 hotkeys)."""
+        if channel in self.strips and self.strips[channel].solo_btn is not None:
+            self.strips[channel].set_solo(not self.strips[channel].solo_btn.isChecked())

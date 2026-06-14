@@ -198,6 +198,8 @@ class AudioEngine:
         # mixer state
         self.vol = {"mic": 1.0, "instrument": 0.8, "pad": 0.9, "master": 0.9}
         self.mute = {c: False for c in self.CHANNELS}
+        # solo applies to the source channels only (not the master bus)
+        self.solo = {"mic": False, "instrument": False, "pad": False}
         self.mic_monitor = False  # mic goes to Discord but not to headphones by default
 
         # ring buffers (sized generously to absorb clock drift)
@@ -222,8 +224,17 @@ class AudioEngine:
         if channel in self.mute:
             self.mute[channel] = bool(muted)
 
+    def set_solo(self, channel: str, soloed: bool) -> None:
+        if channel in self.solo:
+            self.solo[channel] = bool(soloed)
+
     def _g(self, channel: str) -> float:
-        return 0.0 if self.mute[channel] else self.vol[channel]
+        if self.mute[channel]:
+            return 0.0
+        # When any source channel is soloed, non-soloed sources are silenced.
+        if channel != "master" and any(self.solo.values()) and not self.solo[channel]:
+            return 0.0
+        return self.vol[channel]
 
     @property
     def running(self) -> bool:

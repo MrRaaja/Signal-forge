@@ -256,6 +256,14 @@ class MainWindow(QMainWindow):
         self._panic_shortcut.setContext(Qt.ApplicationShortcut)
         self._panic_shortcut.activated.connect(self._panic_pads)
 
+        # F6 / F7 / F8 = solo Mic / Instrument / Pads
+        self._solo_shortcuts = []
+        for keyseq, ch in (("F6", "mic"), ("F7", "instrument"), ("F8", "pad")):
+            sc = QShortcut(QKeySequence(keyseq), self)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(lambda c=ch: self.mixer.toggle_solo(c))
+            self._solo_shortcuts.append(sc)
+
         # device combos persist on change
         self.midi_combo.currentIndexChanged.connect(lambda _: self._save())
         self.mic_combo.currentIndexChanged.connect(lambda _: self._save())
@@ -265,6 +273,7 @@ class MainWindow(QMainWindow):
         # mixer
         self.mixer.volumeChanged.connect(self._on_volume)
         self.mixer.muteChanged.connect(self._on_mute)
+        self.mixer.soloChanged.connect(self._on_solo)
         self.mixer.micMonitorChanged.connect(self._on_mic_monitor)
 
         # instrument & effects
@@ -457,6 +466,12 @@ class MainWindow(QMainWindow):
             self.banner.show()
         else:
             self.banner.hide()
+
+    def _on_solo(self, channel: str, soloed: bool):
+        self.engine.set_solo(channel, soloed)
+        active = [c.upper() for c in ("mic", "instrument", "pad")
+                  if self.engine.solo.get(c)]
+        self.log("Solo: " + (", ".join(active) if active else "off"))
 
     def _on_mute(self, channel: str, muted: bool):
         self.engine.set_mute(channel, muted)
