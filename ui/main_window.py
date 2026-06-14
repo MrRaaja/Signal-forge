@@ -16,14 +16,15 @@ cross-thread signals on the receiver's thread automatically).
 from __future__ import annotations
 
 import os
+import sys
 import threading
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QComboBox, QPushButton, QLabel, QPlainTextEdit, QFileDialog, QMessageBox,
-    QScrollArea
+    QScrollArea, QApplication
 )
-from PySide6.QtCore import QObject, Signal, Qt, QTime, QTimer
+from PySide6.QtCore import QObject, Signal, Qt, QTime, QTimer, QProcess
 from PySide6.QtGui import QShortcut, QKeySequence
 
 from core.branding import APP_NAME, CONTROLLER_NAME, TAGLINE, HAS_PADS_KNOBS
@@ -203,10 +204,19 @@ class MainWindow(QMainWindow):
         self.reset_map_btn.setToolTip(
             "Reset pad notes and knob CCs to factory defaults — use if a preset "
             "change on the controller scrambled them, then re-Learn any custom ones.")
+        self.lock_routing_btn = QPushButton("🔓  Lock routing")
+        self.lock_routing_btn.setCheckable(True)
+        self.lock_routing_btn.setToolTip(
+            "Lock the device dropdowns so they can't be changed by accident")
+        self.restart_btn = QPushButton("⟳  Restart app")
+        self.restart_btn.setToolTip("Relaunch SignalForge (loads any updated code)")
+
         g.addWidget(self.refresh_btn, 4, 0)
         g.addWidget(self.connect_midi_btn, 4, 1)
         g.addWidget(self.audio_btn, 5, 0, 1, 2)
         g.addWidget(self.reset_map_btn, 6, 0, 1, 2)
+        g.addWidget(self.lock_routing_btn, 7, 0)
+        g.addWidget(self.restart_btn, 7, 1)
         box.addWidget(inner)
         return box
 
@@ -248,6 +258,8 @@ class MainWindow(QMainWindow):
         self.connect_midi_btn.clicked.connect(self.connect_midi)
         self.audio_btn.clicked.connect(self.toggle_audio)
         self.reset_map_btn.clicked.connect(self._restore_default_mapping)
+        self.lock_routing_btn.toggled.connect(self._on_lock_routing)
+        self.restart_btn.clicked.connect(self._restart_app)
         self.stop_pads_btn.clicked.connect(self._panic_pads)
         self.learn_panic_btn.clicked.connect(self._start_panic_learn)
 
@@ -638,6 +650,30 @@ class MainWindow(QMainWindow):
         self.log("Mapping reset to defaults (pads 36-43, knobs CC 70-77). "
                  "Use Learn to rebind any that differ on your controller.")
 
+    def _on_lock_routing(self, locked: bool):
+        for combo in (self.midi_combo, self.mic_combo,
+                      self.monitor_combo, self.cable_combo):
+            combo.setEnabled(not locked)
+        self.lock_routing_btn.setText("🔒  Routing locked" if locked else "🔓  Lock routing")
+        self.settings.routing_locked = bool(locked)
+        self._save()
+
+    def _restart_app(self):
+        if QMessageBox.question(
+                self, "Restart SignalForge",
+                "Restart the app now? Audio will stop briefly.") != QMessageBox.Yes:
+            return
+        self.log("Restarting…")
+        try:
+            self.engine.stop()
+            self.midi.close()
+            self._save()
+        except Exception:
+            pass
+        script = os.path.abspath(sys.argv[0])
+        QProcess.startDetached(sys.executable, [script], os.path.dirname(script))
+        QApplication.quit()
+
     def _autostart(self):
         """On launch: connect MIDI and start audio when saved devices appear."""
         self._autostart_tries = 0
@@ -775,6 +811,8 @@ class MainWindow(QMainWindow):
         if self.settings.panic_note is not None:
             self.learn_panic_btn.setText(
                 f"STOP button = note {self.settings.panic_note}  (rebind…)")
+        if self.settings.routing_locked:
+            self.lock_routing_btn.setChecked(True)   # triggers _on_lock_routing
 
     def _save(self):
         try:

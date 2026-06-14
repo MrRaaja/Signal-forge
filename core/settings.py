@@ -94,6 +94,7 @@ class Settings:
     samplerate: int = 48000
     blocksize: int = 256
     autostart_audio: bool = True   # connect MIDI + start audio on launch
+    routing_locked: bool = False   # lock the device-routing dropdowns
 
     # ---- instrument (synth) ----
     synth_profile: str = "Electric Piano"
