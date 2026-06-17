@@ -87,6 +87,8 @@ class MainWindow(QMainWindow):
 
         self._really_quit = False
         self.tray = None
+        # auto-audio is allowed until the user manually clicks Stop
+        self._auto_audio_allowed = True
 
         self._build_ui()
         self._wire_signals()
@@ -95,8 +97,7 @@ class MainWindow(QMainWindow):
         self._apply_settings_to_ui()
         self.refresh_devices()
         self.log("Ready. Select devices, then Connect MIDI and Start Audio.")
-        if self.settings.autostart_audio:
-            self._autostart()
+        self._start_device_watch()
 
     # ============================================================= UI build
     def _build_ui(self):
@@ -639,11 +640,6 @@ class MainWindow(QMainWindow):
         self.status_midi.setStyleSheet("color:#6fcf6f;")
         self.log(f"MIDI connected: {name}")
 
-    # Retry auto-start a few times, since USB audio/MIDI can enumerate a second
-    # or two after the app opens on a cold boot.
-    _AUTOSTART_MAX_TRIES = 6
-    _AUTOSTART_INTERVAL_MS = 2000
-
     def _restore_default_mapping(self):
         """Reset pad notes + knob CCs/targets to factory defaults."""
         with self._maps_lock:
@@ -750,13 +746,20 @@ class MainWindow(QMainWindow):
         QProcess.startDetached(sys.executable, [script], os.path.dirname(script))
         QApplication.quit()
 
-    def _autostart(self):
-        """On launch: connect MIDI and start audio when saved devices appear."""
-        self._autostart_tries = 0
-        self._try_autostart()
+    _WATCH_INTERVAL_MS = 3000   # how often to poll for device hot-plug
+
+    def _start_device_watch(self):
+        """Persistent watcher: connects MIDI / starts audio whenever the saved
+        devices appear, and stops cleanly if they vanish. Designed for a laptop
+        where the MPK / Focusrite are only plugged in some of the time."""
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(self._WATCH_INTERVAL_MS)
+        self._watch_timer.timeout.connect(self._watch_devices)
+        self._watch_timer.start()
+        self._watch_devices()   # run once immediately
 
     def _connect_midi_silent(self) -> None:
-        """Open the saved MIDI port without modal popups (used by auto-start)."""
+        """Open the saved MIDI port without modal popups (used by the watcher)."""
         name = self._combo_value(self.midi_combo)
         if not name or self.midi.is_open:
             return
@@ -769,39 +772,76 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.log(f"Auto-connect MIDI failed (will retry): {e}")
 
-    def _try_autostart(self):
-        self._autostart_tries += 1
-        self.refresh_devices()
-        self._connect_midi_silent()
+    def _midi_device_present(self) -> bool:
+        name = self.settings.midi_device
+        if not name:
+            return False
+        for n in MidiInput.list_inputs():
+            if n == name or n.startswith(name) or name.startswith(n):
+                return True
+        return False
 
-        mon = find_device_index(self._combo_value(self.monitor_combo), want_output=True)
-        cab = find_device_index(self._combo_value(self.cable_combo), want_output=True)
-        if (mon is not None or cab is not None) and not self.engine.running:
-            self.log("Auto-starting audio…")
-            self.toggle_audio()
+    def _watch_devices(self):
+        # --- MIDI hot-plug ---
+        if self.settings.midi_device:
+            present = self._midi_device_present()
+            if self.midi.is_open and not present:
+                self.midi.close()
+                self.status_midi.setText("● MIDI: disconnected")
+                self.status_midi.setStyleSheet("color:#c0554a;")
+                self.log("MIDI device disconnected.")
+            elif not self.midi.is_open and present:
+                self.refresh_devices()       # repopulate combo with the new device
+                self._connect_midi_silent()
 
-        # Done if audio is running and MIDI is either connected or not configured.
-        midi_done = self.midi.is_open or not self._combo_value(self.midi_combo)
-        if self.engine.running and midi_done:
+        mon_idx = find_device_index(self.settings.monitor_device, want_output=True)
+        cab_idx = find_device_index(self.settings.cable_device, want_output=True)
+
+        # --- audio already running: stop if its output(s) were unplugged ---
+        if self.engine.running:
+            if self.settings.monitor_device and mon_idx is None and cab_idx is None:
+                self.engine.stop()
+                self._stop_audio_ui()
+                self.log("Output device disconnected — audio stopped "
+                         "(will auto-start when it returns).")
             return
-        if self._autostart_tries < self._AUTOSTART_MAX_TRIES:
-            QTimer.singleShot(self._AUTOSTART_INTERVAL_MS, self._try_autostart)
+
+        # --- audio not running: start when the gear is back ---
+        if not (self.settings.autostart_audio and self._auto_audio_allowed):
+            return
+        # Require the monitor (e.g. Focusrite) if one is configured, so we don't
+        # start a useless cable-only session while you're working without it.
+        if self.settings.monitor_device:
+            ready = mon_idx is not None
         else:
-            if not self.engine.running:
-                self.log("Auto-start: output device not found after retries — "
-                         "click Refresh devices, then Start Audio.")
+            ready = cab_idx is not None
+        if ready:
+            self.refresh_devices()           # restore combo selections
+            if self._do_start_audio(silent=True):
+                self.log("Devices detected — audio auto-started.")
 
     def toggle_audio(self):
         if self.engine.running:
+            # Manual stop -> remember the user's intent so the watcher won't
+            # immediately auto-start it again.
+            self._auto_audio_allowed = False
             self.engine.stop()
-            self.audio_btn.setText("Start Audio")
-            self.status_mic.setText("● Microphone: inactive")
-            self.status_mic.setStyleSheet("color:#c0554a;")
-            self.status_out.setText("● Virtual output: inactive")
-            self.status_out.setStyleSheet("color:#c0554a;")
+            self._stop_audio_ui()
             self.log("Audio stopped.")
-            return
+        else:
+            self._auto_audio_allowed = True
+            self._do_start_audio(silent=False)
 
+    def _stop_audio_ui(self):
+        self.audio_btn.setText("Start Audio")
+        self.status_mic.setText("● Microphone: inactive")
+        self.status_mic.setStyleSheet("color:#c0554a;")
+        self.status_out.setText("● Virtual output: inactive")
+        self.status_out.setStyleSheet("color:#c0554a;")
+
+    def _do_start_audio(self, silent: bool) -> bool:
+        """Start the engine from the current selections. Returns True on success.
+        `silent` suppresses the modal error box (used by the auto watcher)."""
         mic_name = self._combo_value(self.mic_combo)
         mon_name = self._combo_value(self.monitor_combo)
         cab_name = self._combo_value(self.cable_combo)
@@ -815,9 +855,10 @@ class MainWindow(QMainWindow):
         try:
             self.engine.start()
         except Exception as e:
-            QMessageBox.warning(self, "Audio error", str(e))
+            if not silent:
+                QMessageBox.warning(self, "Audio error", str(e))
             self.log(f"Audio start FAILED: {e}")
-            return
+            return False
 
         # persist names
         self.settings.mic_device = mic_name
@@ -833,6 +874,7 @@ class MainWindow(QMainWindow):
             self.status_out.setText("● Virtual output: active")
             self.status_out.setStyleSheet("color:#6fcf6f;")
         self.log(f"Audio started (sr={self.engine.sr}, block={self.engine.blocksize}).")
+        return True
 
     # ============================================================ settings glue
     def _apply_settings_to_engine(self):
