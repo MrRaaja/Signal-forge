@@ -22,10 +22,12 @@ import threading
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox,
     QComboBox, QPushButton, QLabel, QPlainTextEdit, QFileDialog, QMessageBox,
-    QScrollArea, QApplication
+    QScrollArea, QApplication, QSystemTrayIcon, QMenu
 )
 from PySide6.QtCore import QObject, Signal, Qt, QTime, QTimer, QProcess
-from PySide6.QtGui import QShortcut, QKeySequence
+from PySide6.QtGui import (
+    QIcon, QPixmap, QPainter, QColor, QFont, QAction, QShortcut, QKeySequence
+)
 
 from core.branding import APP_NAME, CONTROLLER_NAME, TAGLINE, HAS_PADS_KNOBS
 from core.settings import (
@@ -83,8 +85,12 @@ class MainWindow(QMainWindow):
         self._panic_note = self.settings.panic_note                   # STOP trigger
         self._learn = None  # None | ("knob", idx) | ("pad", idx) | ("panic", 0)
 
+        self._really_quit = False
+        self.tray = None
+
         self._build_ui()
         self._wire_signals()
+        self._build_tray()
         self._apply_settings_to_engine()
         self._apply_settings_to_ui()
         self.refresh_devices()
@@ -215,8 +221,13 @@ class MainWindow(QMainWindow):
         g.addWidget(self.connect_midi_btn, 4, 1)
         g.addWidget(self.audio_btn, 5, 0, 1, 2)
         g.addWidget(self.reset_map_btn, 6, 0, 1, 2)
+        self.tray_btn = QPushButton("🗕  Hide to tray (work mode)")
+        self.tray_btn.setToolTip(
+            "Hide the window to the system tray — audio keeps running so it won't "
+            "disrupt you. Click the tray icon to bring it back.")
         g.addWidget(self.lock_routing_btn, 7, 0)
         g.addWidget(self.restart_btn, 7, 1)
+        g.addWidget(self.tray_btn, 8, 0, 1, 2)
         box.addWidget(inner)
         return box
 
@@ -260,6 +271,7 @@ class MainWindow(QMainWindow):
         self.reset_map_btn.clicked.connect(self._restore_default_mapping)
         self.lock_routing_btn.toggled.connect(self._on_lock_routing)
         self.restart_btn.clicked.connect(self._restart_app)
+        self.tray_btn.clicked.connect(self._hide_to_tray)
         self.stop_pads_btn.clicked.connect(self._panic_pads)
         self.learn_panic_btn.clicked.connect(self._start_panic_learn)
 
@@ -658,6 +670,70 @@ class MainWindow(QMainWindow):
         self.settings.routing_locked = bool(locked)
         self._save()
 
+    # ============================================================ system tray
+    def _make_icon(self) -> QIcon:
+        pm = QPixmap(64, 64)
+        pm.fill(Qt.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor("#ff5a36"))
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(4, 4, 56, 56, 14, 14)
+        p.setPen(QColor("#111"))
+        p.setFont(QFont("Arial", 30, QFont.Bold))
+        p.drawText(pm.rect(), Qt.AlignCenter, "S")
+        p.end()
+        return QIcon(pm)
+
+    def _build_tray(self):
+        icon = self._make_icon()
+        self.setWindowIcon(icon)
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = None
+            return
+        self.tray = QSystemTrayIcon(icon, self)
+        self.tray.setToolTip(f"{APP_NAME} — {CONTROLLER_NAME}")
+        menu = QMenu()
+        act_show = QAction("Show SignalForge", self)
+        act_show.triggered.connect(self._show_from_tray)
+        act_hide = QAction("Hide (work mode)", self)
+        act_hide.triggered.connect(self._hide_to_tray)
+        act_quit = QAction("Quit SignalForge", self)
+        act_quit.triggered.connect(self._quit_app)
+        menu.addAction(act_show)
+        menu.addAction(act_hide)
+        menu.addSeparator()
+        menu.addAction(act_quit)
+        self.tray.setContextMenu(menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.tray.show()
+
+    def _tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            if self.isVisible():
+                self._hide_to_tray()
+            else:
+                self._show_from_tray()
+
+    def _show_from_tray(self):
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _hide_to_tray(self):
+        if self.tray is None:
+            self.showMinimized()
+            return
+        self.hide()
+        self.tray.showMessage(
+            "SignalForge", "Still running — audio continues. "
+            "Click the tray icon to bring it back.",
+            self._make_icon(), 3000)
+
+    def _quit_app(self):
+        self._really_quit = True
+        self.close()
+
     def _restart_app(self):
         if QMessageBox.question(
                 self, "Restart SignalForge",
@@ -821,7 +897,15 @@ class MainWindow(QMainWindow):
             self.log(f"Settings save failed: {e}")
 
     def closeEvent(self, event):
+        # Closing the window (X) hides to tray instead of quitting, so audio
+        # keeps running while you work. Quit for real via the tray menu.
+        if not self._really_quit and self.tray is not None:
+            event.ignore()
+            self._hide_to_tray()
+            return
         try:
+            if self.tray is not None:
+                self.tray.hide()
             self.engine.stop()
             self.midi.close()
             self._save()
